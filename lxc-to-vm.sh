@@ -308,7 +308,7 @@ Usage: $0 [OPTIONS]
 Options:
   -c, --ctid <ID>        Source LXC container ID
   -v, --vmid <ID>        Target VM ID
-  -s, --storage <NAME>   Proxmox storage target (e.g. local-lvm)
+  -s, --storage <NAME>   Proxmox storage target (used for VM disk import and --migrate-to-local)
   -d, --disk-size <GB>   Disk size in GB (omit for predictive advisor)
   -f, --format <FMT>     Disk format: qcow2 (default) | raw | vmdk
   -b, --bridge <NAME>    Network bridge (default: vmbr0)
@@ -336,7 +336,7 @@ Options:
   --api-host <HOST>      Proxmox API host for cluster operations
   --api-token <TOKEN>    API token for cluster authentication
   --api-user <USER>      API user (default: root@pam)
-  --migrate-to-local     Auto-migrate container to local node if on remote
+  --migrate-to-local     Auto-migrate container to local node using --storage when relocation is needed
   --predict-size         Use predictive advisor for disk size (analyze growth patterns)
   --skip-checks          Skip ID-collision and storage free-space pre-checks
   --no-auto-fix          Disable automatic remediation when health checks detect known issues
@@ -572,6 +572,7 @@ migrate_container_to_local() {
     local ctid="$1"
     local target_node
     target_node=$(get_cluster_info "$ctid") || die "Cannot determine node for container $ctid"
+    local -a migrate_args=()
     
     local local_node
     local_node=$(hostname)
@@ -585,9 +586,13 @@ migrate_container_to_local() {
     
     if $MIGRATE_TO_LOCAL; then
         log "Migrating container $ctid from $target_node to $local_node..."
+        if [[ -n "$STORAGE" ]]; then
+            log "Requesting target storage for migration: $STORAGE"
+            migrate_args+=(--target-storage "$STORAGE")
+        fi
         
         if $DRY_RUN; then
-            log "[DRY-RUN] Would migrate: pct migrate $ctid $local_node --online"
+            log "[DRY-RUN] Would migrate: pct migrate $ctid $local_node --restart${STORAGE:+ --target-storage $STORAGE}"
             return 0
         fi
         
@@ -601,7 +606,7 @@ migrate_container_to_local() {
         fi
         
         # Perform migration with restart
-        if pct migrate "$ctid" "$local_node" --restart; then
+        if pct migrate "$ctid" "$local_node" --restart "${migrate_args[@]}"; then
             ok "Container $ctid migrated to $local_node"
             sleep 3
             return 0
@@ -1930,6 +1935,10 @@ if [[ -z "${STORAGE_STATUS:-}" ]]; then
 fi
 if [[ "$STORAGE_STATUS" != "active" ]]; then
     die "Storage '$STORAGE' is not active (status=$STORAGE_STATUS). Fix Proxmox storage (e.g. activate thinpool) and retry."
+fi
+
+if ! migrate_container_to_local "$CTID"; then
+    exit 1
 fi
 
 # Check LXC is stopped

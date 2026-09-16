@@ -73,7 +73,7 @@ sudo ./lxc-to-vm.sh -c 100 -v 200 -s local-lvm --shrink --start
 | ----- | ---- | ----------- | ------- |
 | `-c` | `--ctid` | Source container ID | Prompted |
 | `-v` | `--vmid` | Target VM ID | Prompted |
-| `-s` | `--storage` | Proxmox storage name | Prompted |
+| `-s` | `--storage` | Proxmox storage name for the imported VM disk and `--migrate-to-local` relocations | Prompted |
 | `-d` | `--disk-size` | Disk size in GB (e.g., 10G) | Auto-calculated |
 | `-b` | `--bridge` | Network bridge | `vmbr0` |
 | `-t` | `--temp-dir` | Working directory | `/var/lib/vz/dump` |
@@ -104,7 +104,7 @@ sudo ./lxc-to-vm.sh -c 100 -v 200 -s local-lvm --shrink --start
 | | `--save-profile` | Save options as profile | — |
 | | `--profile` | Load options from profile | — |
 | | `--list-profiles` | List saved profiles | — |
-| | `--migrate-to-local` | Migrate container to local node | — |
+| | `--migrate-to-local` | Migrate container to local node using the selected `--storage` when relocation is required | — |
 | | `--api-host` | Proxmox API host | — |
 | | `--api-token` | Proxmox API token | — |
 | | `--api-user` | Proxmox API user | `root@pam` |
