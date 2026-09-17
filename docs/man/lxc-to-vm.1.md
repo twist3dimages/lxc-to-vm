@@ -45,7 +45,8 @@ and remote cluster migration.
 : Show the planned actions without making changes.
 
 **-k, --keep-network**
-: Preserve the original network config and only add an `ens18` adapter.
+: Preserve the original network config, keep source `net0` settings, and only
+  add an `ens18` adapter. Use `--bridge` to override the source bridge.
 
 **-S, --start**
 : Auto-start the VM and run health checks after conversion.
