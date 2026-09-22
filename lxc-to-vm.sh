@@ -162,6 +162,53 @@ dump_container_info() {
     pct unmount "$ctid" >/dev/null 2>&1 || true
 }
 
+get_container_net_config_line() {
+    local config_text="$1"
+    local net_id="${2:-net0}"
+
+    awk -F': ' -v net_id="$net_id" '$1 == net_id { print $2; exit }' <<< "$config_text"
+}
+
+build_vm_net0_from_container() {
+    local config_text="$1"
+    local net_id="${2:-net0}"
+    local bridge_override="${3:-}"
+    local source_line bridge="" mac=""
+    local part key value
+    local -a source_parts vm_parts extra_parts
+
+    source_line="$(get_container_net_config_line "$config_text" "$net_id")"
+    [[ -n "$source_line" ]] || return 1
+
+    IFS=',' read -r -a source_parts <<< "$source_line"
+    for part in "${source_parts[@]}"; do
+        part="${part#"${part%%[![:space:]]*}"}"
+        part="${part%"${part##*[![:space:]]}"}"
+        [[ "$part" == *=* ]] || continue
+        key="${part%%=*}"
+        value="${part#*=}"
+        case "$key" in
+            bridge) bridge="$value" ;;
+            hwaddr) mac="$value" ;;
+            name|type|ip|gw|ip6|gw6) ;;
+            *) extra_parts+=("$part") ;;
+        esac
+    done
+
+    [[ -n "$bridge_override" ]] && bridge="$bridge_override"
+
+    if [[ -n "$mac" ]]; then
+        vm_parts+=("virtio=${mac}")
+    else
+        vm_parts+=("virtio")
+    fi
+    vm_parts+=("bridge=${bridge}")
+    vm_parts+=("${extra_parts[@]}")
+
+    local IFS=','
+    printf '%s\n' "${vm_parts[*]}"
+}
+
 pct_mount_retry() {
     local ctid="$1"
     if pct mount "$ctid" >/dev/null 2>&1; then
@@ -315,7 +362,7 @@ Options:
   -t, --temp-dir <PATH>  Working directory for temp image (default: /var/lib/vz/dump)
   -B, --bios <TYPE>      Firmware type: seabios (default) | ovmf (UEFI)
   -n, --dry-run          Show what would be done without making changes
-  -k, --keep-network     Preserve original network config (only add ens18 adapter)
+  -k, --keep-network     Preserve original network config and source net0 settings
   -S, --start            Auto-start VM and run health checks after conversion
   --shrink               Shrink LXC disk to usage + headroom before converting
   --snapshot             Create LXC snapshot before conversion (for rollback)
@@ -1266,6 +1313,7 @@ run_single_conversion() {
 CTID="" VMID="" STORAGE="" DISK_SIZE="" DISK_FORMAT="qcow2" BRIDGE="vmbr0" WORK_DIR=""
 BIOS_TYPE="seabios" DRY_RUN=false KEEP_NETWORK=false AUTO_START=false SHRINK_FIRST=false
 CREATE_SNAPSHOT=false ROLLBACK_ON_FAILURE=false DESTROY_SOURCE=false RESUME_MODE=false
+BRIDGE_EXPLICIT=false VM_NET0_CONFIG=""
 BATCH_FILE="" RANGE_SPEC="" PROFILE_NAME="" SAVE_PROFILE_NAME=""
 WIZARD_MODE=false PARALLEL_JOBS=1 VALIDATE_ONLY=false
 EXPORT_DEST="" AS_TEMPLATE=false SYSPREP=false
@@ -1280,7 +1328,7 @@ while [[ $# -gt 0 ]]; do
         -s|--storage)    STORAGE="$2";     shift 2 ;;
         -d|--disk-size)  DISK_SIZE="$2";   shift 2 ;;
         -f|--format)     DISK_FORMAT="$2";  shift 2 ;;
-        -b|--bridge)     BRIDGE="$2";      shift 2 ;;
+        -b|--bridge)     BRIDGE="$2"; BRIDGE_EXPLICIT=true; shift 2 ;;
         -t|--temp-dir)   WORK_DIR="$2";    shift 2 ;;
         -B|--bios)       BIOS_TYPE="$2";   shift 2 ;;
         -n|--dry-run)    DRY_RUN=true;      shift ;;
@@ -3101,12 +3149,25 @@ verbose "Phase 3: VM creation and disk import"
 
 log "Creating VM $VMID..."
 log "VM name: $VM_NAME"
-debug "VM configuration: memory=${MEMORY}MB, cores=$CORES, bridge=$BRIDGE, bios=$BIOS_TYPE"
+VM_BRIDGE="$BRIDGE"
+VM_NET0_CONFIG="virtio,bridge=${VM_BRIDGE}"
+if $KEEP_NETWORK; then
+    SOURCE_NET0_CONFIG="$(get_container_net_config_line "${CT_CONFIG_RAW:-}" "net0")"
+    if [[ -n "$SOURCE_NET0_CONFIG" ]]; then
+        if ! $BRIDGE_EXPLICIT; then
+            SOURCE_BRIDGE="$(tr ',' '\n' <<< "$SOURCE_NET0_CONFIG" | awk -F= '$1=="bridge"{print $2; exit}')"
+            [[ -n "$SOURCE_BRIDGE" ]] && VM_BRIDGE="$SOURCE_BRIDGE"
+        fi
+        VM_NET0_CONFIG="$(build_vm_net0_from_container "${CT_CONFIG_RAW:-}" "net0" "$VM_BRIDGE")"
+        log "Preserving source net0 settings: $VM_NET0_CONFIG"
+    fi
+fi
+debug "VM configuration: memory=${MEMORY}MB, cores=$CORES, bridge=$VM_BRIDGE, bios=$BIOS_TYPE"
 qm create "$VMID" \
     --name "$VM_NAME" \
     --memory "$MEMORY" \
     --cores "$CORES" \
-    --net0 "virtio,bridge=${BRIDGE}" \
+    --net0 "$VM_NET0_CONFIG" \
     --bios "$BIOS_TYPE" \
     --ostype "$OSTYPE" \
     --cpu host \
@@ -3482,7 +3543,11 @@ e "  ${BOLD}Cores:${NC}       $CORES"
 e "  ${BOLD}Disk:${NC}        ${DISK_SIZE}GB ($DISK_FORMAT)"
 e "  ${BOLD}Firmware:${NC}    $BIOS_TYPE"
 e "  ${BOLD}Distro:${NC}      $DISTRO_FAMILY (${DISTRO_ID:-unknown})"
-e "  ${BOLD}Network:${NC}     $($KEEP_NETWORK && echo 'preserved' || echo 'DHCP on ens18') (bridge: $BRIDGE)"
+if $KEEP_NETWORK; then
+    e "  ${BOLD}Network:${NC}     preserved (${VM_NET0_CONFIG:-virtio,bridge=${VM_BRIDGE:-$BRIDGE}})"
+else
+    e "  ${BOLD}Network:${NC}     DHCP on ens18 (bridge: $BRIDGE)"
+fi
 e "  ${BOLD}Snapshot:${NC}    $([[ "$CREATE_SNAPSHOT" == "true" ]] && echo 'created' || echo 'none')"
 e "  ${BOLD}Destroy source:${NC}  $DESTROY_SOURCE"
 e "  ${BOLD}Validation:${NC}  ${CHECKS_PASSED}/${CHECKS_TOTAL} checks passed"

@@ -79,7 +79,7 @@ sudo ./lxc-to-vm.sh -c 100 -v 200 -s local-lvm --shrink --start
 | `-t` | `--temp-dir` | Working directory | `/var/lib/vz/dump` |
 | `-n` | `--dry-run` | Preview without changes | — |
 | `-S` | `--start` | Auto-start after conversion | — |
-| `-k` | `--keep-network` | Preserve container network config | — |
+| `-k` | `--keep-network` | Preserve container network config and source `net0` settings | — |
 | `-U` | `--uefi` | Create UEFI VM (BIOS default) | — |
 | `-m` | `--memory` | VM memory in MB | From container |
 | `-C` | `--cores` | VM CPU cores | From container |
@@ -146,6 +146,10 @@ sudo ./lxc-to-vm.sh -c 100 -v 200 -s local-lvm --dry-run
 ```bash
 sudo ./lxc-to-vm.sh -c 100 -v 200 -s local-lvm --keep-network
 ```
+
+When `--keep-network` is used, the converter keeps the source container's `net0`
+parameters (such as bridge, MAC, VLAN tag, and firewall flags) unless you
+explicitly override the bridge with `--bridge`.
 
 ### Safe Conversion with Snapshot
 
