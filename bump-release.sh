@@ -78,6 +78,7 @@ done
 cd "$(dirname "$0")"
 
 [[ -f "CHANGELOG.md" ]] || die "CHANGELOG.md not found (run from repo root)"
+grep -q '^## \[' CHANGELOG.md || die "No version heading found in CHANGELOG.md."
 
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 [[ "$BRANCH" != "HEAD" ]] || die "Detached HEAD — check out a branch first."
