@@ -1,3 +1,10 @@
+<!-- ==============================================================================
+     ### lxc-to-vm file header ###
+     File: shrink-vm.1.md
+     Description: Shrink vm.1
+     License: MIT
+     ============================================================================== -->
+<!-- markdownlint-disable MD041 -->
 % SHRINK-VM(1) lxc-to-vm 6.0.6
 
 # NAME

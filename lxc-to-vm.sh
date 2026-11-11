@@ -29,7 +29,7 @@ if [[ "${DEBUG:-0}" -eq 1 ]]; then
     set -x
 fi
 
-readonly VERSION="6.0.6"
+readonly VERSION="6.2.1"
 
 
 # ==============================================================================
@@ -359,6 +359,8 @@ Options:
   -d, --disk-size <GB>   Disk size in GB (omit for predictive advisor)
   -f, --format <FMT>     Disk format: qcow2 (default) | raw | vmdk
   -b, --bridge <NAME>    Network bridge (default: vmbr0)
+  -p, --pkg <PKGS>       Extra packages to install in the converted guest
+                         (comma/space separated, repeatable; apt/dnf/yum/apk/pacman/zypper)
   -t, --temp-dir <PATH>  Working directory for temp image (default: /var/lib/vz/dump)
   -B, --bios <TYPE>      Firmware type: seabios (default) | ovmf (UEFI)
   -n, --dry-run          Show what would be done without making changes
@@ -412,6 +414,7 @@ Examples:
   $0 -c 100 -v 200 -s local-lvm --as-template --sysprep              # Create template
   $0 -c 100 -v 200 -s local-lvm --replace-vm                         # Replace existing VM
   $0 -c 100 -v 200 -s local-lvm --shrink                # Auto-shrink + convert
+  $0 -c 100 -v 200 -s local-lvm -d 32 -p "curl htop"    # Install extra packages
 USAGE
     exit 0
 }
@@ -674,7 +677,7 @@ migrate_container_to_local() {
 # Hooks are stored in /var/lib/lxc-to-vm/hooks/ and named by stage
 
 # Directory where hook scripts are stored
-HOOKS_DIR="/var/lib/lxc-to-vm/hooks"
+HOOKS_DIR="${LXC_TO_VM_HOOK_DIR:-/var/lib/lxc-to-vm/hooks}"
 
 ### Function: run_hook
 # Execute a user-supplied hook script for a given conversion stage.
@@ -704,7 +707,7 @@ run_hook() {
         export HOOK_STAGE="$hook_name"
         
         if ! "$hook_script" "$ctid" "$vmid" >> "$LOG_FILE" 2>&1; then
-            warn "Hook $hook_name exited with error (non-fatal)"
+            warn "Hook $hook_name exited with error"
             return 1
         fi
         return 0
@@ -915,6 +918,7 @@ BIOS_TYPE="${BIOS_TYPE:-seabios}"
 KEEP_NETWORK="${KEEP_NETWORK:-false}"
 SHRINK_FIRST="${SHRINK_FIRST:-false}"
 AUTO_START="${AUTO_START:-false}"
+PKG_ADDONS="${PKG_ADDONS:-}"
 PROFILE_EOF
 
     ok "Profile '${name}' saved to $profile_file"
@@ -1288,6 +1292,14 @@ run_single_conversion() {
 
     # Run the main conversion (trap will handle cleanup)
     if do_conversion; then
+        if $DESTROY_SOURCE; then
+            # Run pre-destroy hook
+            if ! run_hook "pre-destroy" "$CTID" "$VMID"; then
+                warn "Pre-destroy hook failed; source container was not destroyed."
+                return 1
+            fi
+        fi
+
         # Success - remove snapshot and optionally destroy source
         remove_snapshot "$CTID"
 
@@ -1320,6 +1332,7 @@ EXPORT_DEST="" AS_TEMPLATE=false SYSPREP=false
 API_HOST="" API_TOKEN="" API_USER="root@pam" MIGRATE_TO_LOCAL=false PREDICT_SIZE=false
 AUTO_FIX=true SKIP_CHECKS=false
 CLEANUP_EXISTING_VM=false
+PKG_ADDONS="" PKG_ADDON_LIST=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1329,6 +1342,7 @@ while [[ $# -gt 0 ]]; do
         -d|--disk-size)  DISK_SIZE="$2";   shift 2 ;;
         -f|--format)     DISK_FORMAT="$2";  shift 2 ;;
         -b|--bridge)     BRIDGE="$2"; BRIDGE_EXPLICIT=true; shift 2 ;;
+        -p|--pkg|--packages) PKG_ADDONS+=" ${2//,/ }"; shift 2 ;;
         -t|--temp-dir)   WORK_DIR="$2";    shift 2 ;;
         -B|--bios)       BIOS_TYPE="$2";   shift 2 ;;
         -n|--dry-run)    DRY_RUN=true;      shift ;;
@@ -1371,6 +1385,17 @@ done
 # Handle profile loading first (before single conversion logic)
 if [[ -n "$PROFILE_NAME" ]]; then
     load_profile "$PROFILE_NAME"
+fi
+
+# Validate extra package names — values are interpolated into a generated
+# script that runs as root inside the chroot, so keep a conservative charset.
+if [[ -n "${PKG_ADDONS// /}" ]]; then
+    for pkg_name in $PKG_ADDONS; do
+        [[ "$pkg_name" =~ ^[A-Za-z0-9][A-Za-z0-9._:+~=/%-]*$ ]] \
+            || die "Invalid package name for --pkg: '$pkg_name'"
+        PKG_ADDON_LIST+=" $pkg_name"
+    done
+    PKG_ADDON_LIST="${PKG_ADDON_LIST# }"
 fi
 
 # Handle validate-only mode first
@@ -1961,7 +1986,7 @@ if ! pct config "$CTID" >/dev/null 2>&1; then
 fi
 
 if qm config "$VMID" >/dev/null 2>&1; then
-    local replace_arg=""
+    replace_arg=""
     $CLEANUP_EXISTING_VM && replace_arg="true"
     if check_target_collision vm "$VMID" "$replace_arg"; then
         destroy_vm_if_exists "$VMID"
@@ -2004,6 +2029,12 @@ fi
 # --- Shrink container disk before conversion ---
 if $SHRINK_FIRST && ! $DRY_RUN; then
     log "=== PRE-CONVERSION DISK SHRINK ==="
+
+    # Run pre-shrink hook
+    if ! run_hook "pre-shrink" "$CTID" "$VMID"; then
+        warn "Pre-shrink hook failed; source container was not shrinked."
+        return 1
+    fi
 
     # Parse rootfs from container config
     SHRINK_ROOTFS_LINE=$(pct config "$CTID" | grep "^rootfs:")
@@ -2172,6 +2203,9 @@ if $SHRINK_FIRST && ! $DRY_RUN; then
         DISK_SIZE=$(( SHRINK_TARGET_GB + 3 ))
         ok "Auto-setting VM disk size to ${DISK_SIZE}GB (container: ${SHRINK_TARGET_GB}GB + 3GB partition/ext4 overhead)"
     fi
+
+    # Run post-shrink hook
+    run_hook "post-shrink" "$CTID" "$VMID" || true
 fi
 
 # If --shrink used in dry-run, show what would happen
@@ -2196,6 +2230,7 @@ if $DRY_RUN; then
     e "  ${BOLD}Firmware:${NC}    $BIOS_TYPE"
     e "  ${BOLD}Bridge:${NC}      $BRIDGE"
     e "  ${BOLD}Keep net:${NC}    $KEEP_NETWORK"
+    e "  ${BOLD}Extra pkgs:${NC}  ${PKG_ADDON_LIST:-none}"
     e "  ${BOLD}Auto-start:${NC}  $AUTO_START"
     e "  ${BOLD}Snapshot:${NC}    $CREATE_SNAPSHOT"
     e "  ${BOLD}Rollback:${NC}    $ROLLBACK_ON_FAILURE"
@@ -2390,6 +2425,14 @@ do_conversion() {
     verbose "Starting main conversion workflow for CT $CTID → VM $VMID"
     verbose "Configuration: storage=$STORAGE, disk=${DISK_SIZE}GB, format=$DISK_FORMAT, bios=$BIOS_TYPE"
 
+    if ! $DRY_RUN; then
+        # Run pre-convert hook
+        if ! run_hook "pre-convert" "$CTID" "$VMID"; then
+            warn "Pre-convert hook failed; source container was not converted."
+            return 1
+        fi
+    fi
+
 # Determine the working base directory
 WORK_BASE="${WORK_DIR:-$DEFAULT_WORK_BASE}"
 mkdir -p "$WORK_BASE" 2>/dev/null || true
@@ -2399,7 +2442,7 @@ TEMP_DIR="${WORK_BASE}/lxc-to-vm-${CTID}"
 IMAGE_FILE="${TEMP_DIR}/disk.raw"
 MOUNT_POINT="${TEMP_DIR}/mnt"
 
-log "Source CTID=$CTID  Target VMID=$VMID  Storage=$STORAGE  Disk=${DISK_SIZE}GB  Format=$DISK_FORMAT  Bridge=$BRIDGE"
+log "Source CTID=$CTID  Target VMID=$VMID  Storage=$STORAGE  Disk=${DISK_SIZE}GB  Format=$DISK_FORMAT  Bridge=$BRIDGE  ExtraPkgs=${PKG_ADDON_LIST:-none}"
 log "Working directory: $TEMP_DIR"
 
 # Create Workspace
@@ -3024,6 +3067,40 @@ elif [ -f /etc/inittab ]; then
 fi
 SERIAL_BLOCK
 
+# --- Extra packages requested via -p/--pkg ---
+# One generic block for every distro family: the package manager is detected
+# inside the chroot rather than trusting DISTRO_FAMILY, which also covers the
+# unknown-distro fallback and future families. Runs after the boot-critical
+# steps and is non-fatal, so a bad package name cannot abort the conversion.
+if [[ -n "$PKG_ADDON_LIST" ]]; then
+    log "Additional packages will be installed in chroot: $PKG_ADDON_LIST"
+    cat >> "$CHROOT_SCRIPT" <<PKG_ADDON_BLOCK
+
+# --- Extra packages requested via -p/--pkg ---
+if command -v apt-get >/dev/null 2>&1; then
+    apt-get install -y ${PKG_ADDON_LIST} \
+        || echo "WARNING: failed to install extra packages: ${PKG_ADDON_LIST}" >&2
+elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y ${PKG_ADDON_LIST} \
+        || echo "WARNING: failed to install extra packages: ${PKG_ADDON_LIST}" >&2
+elif command -v yum >/dev/null 2>&1; then
+    yum install -y ${PKG_ADDON_LIST} \
+        || echo "WARNING: failed to install extra packages: ${PKG_ADDON_LIST}" >&2
+elif command -v apk >/dev/null 2>&1; then
+    apk add ${PKG_ADDON_LIST} \
+        || echo "WARNING: failed to install extra packages: ${PKG_ADDON_LIST}" >&2
+elif command -v pacman >/dev/null 2>&1; then
+    pacman -S --needed --noconfirm ${PKG_ADDON_LIST} \
+        || echo "WARNING: failed to install extra packages: ${PKG_ADDON_LIST}" >&2
+elif command -v zypper >/dev/null 2>&1; then
+    zypper --non-interactive install ${PKG_ADDON_LIST} \
+        || echo "WARNING: failed to install extra packages: ${PKG_ADDON_LIST}" >&2
+else
+    echo "WARNING: no supported package manager in guest; skipping extra packages: ${PKG_ADDON_LIST}" >&2
+fi
+PKG_ADDON_BLOCK
+fi
+
 log "Entering chroot to install kernel and GRUB ($DISTRO_FAMILY / $BIOS_TYPE)..."
 chmod +x "$CHROOT_SCRIPT"
 cp "$CHROOT_SCRIPT" "$MOUNT_POINT/tmp/chroot-setup.sh"
@@ -3219,6 +3296,9 @@ log "Attaching disk: $IMPORTED_DISK"
 qm set "$VMID" --scsi0 "$IMPORTED_DISK"
 qm set "$VMID" --boot order=scsi0
 qm resize "$VMID" scsi0 "${DISK_SIZE}G" 2>/dev/null || true
+
+# Run post-convert hook
+run_hook "post-convert" "$CTID" "$VMID"
 
 # ==============================================================================
 # 7. POST-CONVERSION VALIDATION
@@ -3523,6 +3603,9 @@ if $AUTO_START; then
 fi
 
 if (( VM_HEALTH_ERRORS > 0 )); then
+    # Run health-check-failed hook
+    run_hook "health-check-failed" "$CTID" "$VMID"
+
     collect_vm_diagnostics
     warn "Post-conversion VM health checks had ${VM_HEALTH_ERRORS} issue(s). Review $LOG_FILE for host/guest diagnostics."
     warn "The VM was created and started successfully. Guest agent may need more time to initialize."
@@ -3582,7 +3665,7 @@ if [[ -n "$CTID" && -n "$VMID" ]]; then
     fi
 
     if qm config "$VMID" >/dev/null 2>&1; then
-        local replace_arg=""
+        replace_arg=""
         $CLEANUP_EXISTING_VM && replace_arg="true"
         if check_target_collision vm "$VMID" "$replace_arg"; then
             destroy_vm_if_exists "$VMID"
@@ -3599,6 +3682,14 @@ if [[ -n "$CTID" && -n "$VMID" ]]; then
 
     # Run the conversion
     if do_conversion; then
+        # Run pre-destroy hook before removing the safety snapshot
+        if $DESTROY_SOURCE; then
+            if ! run_hook "pre-destroy" "$CTID" "$VMID"; then
+                warn "Pre-destroy hook failed; source container was not destroyed."
+                exit 1
+            fi
+        fi
+
         # Success - remove snapshot and optionally destroy source
         remove_snapshot "$CTID"
 

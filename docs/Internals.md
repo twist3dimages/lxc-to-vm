@@ -14,7 +14,7 @@ points of the `lxc-to-vm` toolkit for contributors and advanced users.
 
 ## Project Layout
 
-```
+```text
 lxc-to-vm/
 ├── lxc-to-vm.sh           # Main LXC → VM converter
 ├── vm-to-lxc.sh           # Main VM → LXC converter
@@ -97,7 +97,7 @@ Logging helpers and trivial one-liners are documented inline where helpful.
 
 ## LXC → VM Conversion Flow (`lxc-to-vm.sh`)
 
-```
+```text
 Input validation
       │
       ▼
@@ -122,6 +122,9 @@ Sync filesystem into disk image (rsync)
 Install bootloader / kernel / initramfs per detected distro
       │
       ▼
+Install extra packages requested via -p/--pkg (package manager auto-detected)
+      │
+      ▼
 Configure network adapter (ens18), bootloader, fstab
       │
       ▼
@@ -140,7 +143,7 @@ Key phases are instrumented with `run_hook` so users can inject custom logic.
 
 ## VM → LXC Conversion Flow (`vm-to-lxc.sh`)
 
-```
+```text
 Input validation
       │
       ▼
@@ -195,7 +198,7 @@ when available and falls back to `ntfsfix`/`ntfsresize`.
 `lib/os-detect.sh` inspects a disk image and sets several globals:
 
 | Global | Values |
-|--------|--------|
+| -------- | -------- |
 | `OS_TYPE` | `windows`, `linux`, `unknown` |
 | `OS_DISTRO` | Distribution hint or `unknown` |
 | `OS_VERSION` | Version string when available |
@@ -219,7 +222,7 @@ Hook files are named by stage. Each hook receives the source and target IDs as
 positional arguments and the following environment variables:
 
 | Variable | Meaning |
-|----------|---------|
+| ---------- | --------- |
 | `HOOK_CTID` | Source/target container ID |
 | `HOOK_VMID` | Source/target VM ID |
 | `HOOK_STAGE` | Stage name |
@@ -294,7 +297,7 @@ Token format: `API_TOKEN="<user>!<token-name>=<secret>"`.
 ## Common Extension Points
 
 | Task | Where to add |
-|------|--------------|
+| ------ | -------------- |
 | New distro support | `lxc-to-vm.sh` bootloader/initramfs sections; `lib/os-detect.sh` |
 | New storage backend | `shrink-lxc.sh`, `expand-lxc.sh`, `shrink-vm.sh`, `expand-vm.sh` case blocks |
 | New conversion hook stage | `run_hook()` calls in `lxc-to-vm.sh` / `vm-to-lxc.sh` |

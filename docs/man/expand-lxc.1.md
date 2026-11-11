@@ -1,3 +1,10 @@
+<!-- ==============================================================================
+     ### lxc-to-vm file header ###
+     File: expand-lxc.1.md
+     Description: Expand lxc.1
+     License: MIT
+     ============================================================================== -->
+<!-- markdownlint-disable MD041 -->
 % EXPAND-LXC(1) lxc-to-vm 6.0.0
 
 # NAME
